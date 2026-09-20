@@ -11,9 +11,16 @@ jobs:
     runs-on: windows-latest
 
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
 
+      # =========================
+      # 1. 获取源码
+      # =========================
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      # =========================
+      # 2. 下载 Python 3.4.4 x86
+      # =========================
       - name: Download Python 3.4.4 x86
         shell: powershell
         run: |
@@ -21,6 +28,9 @@ jobs:
             -Uri "https://www.python.org/ftp/python/3.4.4/python-3.4.4.msi" `
             -OutFile "$env:RUNNER_TEMP\python-3.4.4-x86.msi"
 
+      # =========================
+      # 3. 安装 Python 3.4.4 x86
+      # =========================
       - name: Install Python 3.4.4 x86
         shell: powershell
         run: |
@@ -33,48 +43,86 @@ jobs:
             throw "Python 3.4.4 x86 installation failed."
           }
 
+          C:\Python34x86\python.exe --version
+
+      # =========================
+      # 4. 安装适用于 Python 3.4 的 pip
+      # =========================
       - name: Install compatible pip
         shell: cmd
         run: |
           C:\Python34x86\python.exe -m pip install --upgrade "pip==19.1.1"
           C:\Python34x86\python.exe -m pip --version
 
-      - name: Install Pillow for Python 3.4 x86
+      # =========================
+      # 5. 安装 Pillow
+      # =========================
+      - name: Install Pillow
         shell: cmd
         run: |
-          C:\Python34x86\python.exe -m pip install --only-binary=:all: "Pillow==5.4.1"
+          C:\Python34x86\python.exe -m pip install "Pillow==5.4.1"
 
-      - name: Install PyInstaller XP-compatible version
+      # =========================
+      # 6. 安装 PyInstaller 老版本依赖
+      # =========================
+      - name: Install PyInstaller dependencies
         shell: cmd
         run: |
-          C:\Python34x86\python.exe -m pip install "PyInstaller==3.4"
+          C:\Python34x86\python.exe -m pip install "altgraph==0.16.1"
+          C:\Python34x86\python.exe -m pip install "pywin32-ctypes==0.2.0"
+          C:\Python34x86\python.exe -m pip install "pefile==2018.8.8"
 
-      - name: Check Python architecture
+      # =========================
+      # 7. 安装 PyInstaller 3.4
+      # =========================
+      - name: Install PyInstaller
         shell: cmd
         run: |
-          C:\Python34x86\python.exe -c "import struct; print('Python bits:', struct.calcsize('P') * 8); assert struct.calcsize('P') == 4"
+          C:\Python34x86\python.exe -m pip install --no-deps "PyInstaller==3.4"
 
-      - name: Build single-file EXE
+      # =========================
+      # 8. 验证构建环境
+      # =========================
+      - name: Verify build environment
         shell: cmd
         run: |
-          C:\Python34x86\Scripts\pyinstaller.exe ^
+          C:\Python34x86\python.exe -c "import pefile; print('pefile:', pefile.__version__)"
+          C:\Python34x86\python.exe -c "import altgraph; print('altgraph:', altgraph.__version__)"
+          C:\Python34x86\python.exe -c "import PIL; print('Pillow:', PIL.__version__)"
+          C:\Python34x86\Scripts\pyinstaller.exe --version
+
+      # =========================
+      # 9. 构建 XP 32 位 EXE
+      # =========================
+      - name: Build diagnostic EXE
+        shell: cmd
+        run: |
+           C:\Python34x86\Scripts\pyinstaller.exe ^
             --noconfirm ^
             --clean ^
             --onefile ^
-            --windowed ^
-            --name ImageSizer_XP32 ^
+            ---console ^
+             --name ImageSizer_XP32_Debug ^
             ImageSizer.py
 
-      - name: Verify
+      # =========================
+      # 10. 检查 EXE
+      # =========================
+      - name: Verify EXE
         shell: powershell
         run: |
           if (!(Test-Path "dist\ImageSizer_XP32.exe")) {
-            throw "ImageSizer_XP32.exe was not generated."
+            throw "EXE was not generated."
           }
-          Get-Item "dist\ImageSizer_XP32.exe" | Format-List Name,Length,FullName
 
-      - name: Upload XP 32-bit EXE
-        uses: actions/upload-artifact@v4
+          Get-Item "dist\ImageSizer_XP32.exe" |
+            Format-List Name,Length,FullName
+
+      # =========================
+      # 11. 上传 EXE
+      # =========================
+      - name: Upload EXE
+        uses: actions/upload-artifact@v6
         with:
           name: ImageSizer-Windows-XP-32bit
           path: dist/ImageSizer_XP32.exe
