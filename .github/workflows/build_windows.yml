@@ -12,15 +12,15 @@ jobs:
 
     steps:
 
-      # =========================
+      # ========================================
       # 1. 获取源码
-      # =========================
+      # ========================================
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@v4
 
-      # =========================
+      # ========================================
       # 2. 下载 Python 3.4.4 x86
-      # =========================
+      # ========================================
       - name: Download Python 3.4.4 x86
         shell: powershell
         run: |
@@ -28,9 +28,9 @@ jobs:
             -Uri "https://www.python.org/ftp/python/3.4.4/python-3.4.4.msi" `
             -OutFile "$env:RUNNER_TEMP\python-3.4.4-x86.msi"
 
-      # =========================
+      # ========================================
       # 3. 安装 Python 3.4.4 x86
-      # =========================
+      # ========================================
       - name: Install Python 3.4.4 x86
         shell: powershell
         run: |
@@ -45,55 +45,94 @@ jobs:
 
           C:\Python34x86\python.exe --version
 
-      # =========================
-      # 4. 安装适用于 Python 3.4 的 pip
-      # =========================
+      # ========================================
+      # 4. 安装兼容 pip
+      # ========================================
       - name: Install compatible pip
         shell: cmd
         run: |
           C:\Python34x86\python.exe -m pip install --upgrade "pip==19.1.1"
           C:\Python34x86\python.exe -m pip --version
 
-      # =========================
+      # ========================================
       # 5. 安装 Pillow
-      # =========================
+      # ========================================
       - name: Install Pillow
         shell: cmd
         run: |
-          C:\Python34x86\python.exe -m pip install "Pillow==5.4.1"
+          C:\Python34x86\python.exe -m pip install --no-cache-dir "Pillow==5.4.1"
 
-      # =========================
-      # 6. 安装 PyInstaller 老版本依赖
-      # =========================
+      # ========================================
+      # 6. 安装 PyInstaller 依赖
+      # ========================================
       - name: Install PyInstaller dependencies
         shell: cmd
         run: |
-          C:\Python34x86\python.exe -m pip install "altgraph==0.16.1"
-          C:\Python34x86\python.exe -m pip install "pywin32-ctypes==0.2.0"
-          C:\Python34x86\python.exe -m pip install "pefile==2018.8.8"
+          C:\Python34x86\python.exe -m pip install --no-cache-dir "altgraph==0.16.1"
+          C:\Python34x86\python.exe -m pip install --no-cache-dir "pywin32-ctypes==0.2.0"
+          C:\Python34x86\python.exe -m pip install --no-cache-dir "pefile==2018.8.8"
 
-      # =========================
+      # ========================================
       # 7. 安装 PyInstaller 3.4
-      # =========================
+      # ========================================
       - name: Install PyInstaller
         shell: cmd
         run: |
-          C:\Python34x86\python.exe -m pip install --no-deps "PyInstaller==3.4"
+          C:\Python34x86\python.exe -m pip install --no-cache-dir --no-deps "PyInstaller==3.4"
 
-      # =========================
-      # 8. 验证构建环境
-      # =========================
-      - name: Verify build environment
+      # ========================================
+      # 8. 验证 Python
+      # ========================================
+      - name: Verify Python
         shell: cmd
         run: |
-          C:\Python34x86\python.exe -c "import pefile; print('pefile:', pefile.__version__)"
-          C:\Python34x86\python.exe -c "import altgraph; print('altgraph:', altgraph.__version__)"
+          C:\Python34x86\python.exe --version
+
+          C:\Python34x86\python.exe -c "import sys; print('Python executable:', sys.executable)"
+
+          C:\Python34x86\python.exe -c "import struct; print('Python bits:', struct.calcsize('P') * 8)"
+
+      # ========================================
+      # 9. 验证 Pillow
+      # ========================================
+      - name: Verify Pillow
+        shell: cmd
+        run: |
           C:\Python34x86\python.exe -c "import PIL; print('Pillow:', PIL.__version__)"
+
+          C:\Python34x86\python.exe -c "import PIL.Image; print('PIL.Image OK')"
+
+          C:\Python34x86\python.exe -c "import PIL._imaging; print('PIL._imaging OK')"
+
+      # ========================================
+      # 10. 显示 Pillow 文件
+      # ========================================
+      - name: Inspect Pillow
+        shell: powershell
+        run: |
+          Write-Host "===== Pillow directory ====="
+          Get-ChildItem "C:\Python34x86\Lib\site-packages\PIL" |
+            Select-Object Name, Length
+
+          Write-Host ""
+          Write-Host "===== Imaging files ====="
+
+          Get-ChildItem `
+            "C:\Python34x86\Lib\site-packages\PIL" `
+            -Filter "*imaging*" |
+            Select-Object FullName, Length
+
+      # ========================================
+      # 11. 验证 PyInstaller
+      # ========================================
+      - name: Verify PyInstaller
+        shell: cmd
+        run: |
           C:\Python34x86\Scripts\pyinstaller.exe --version
 
-      # =========================
-      # 9. 构建 XP 32 位 EXE
-      # =========================
+      # ========================================
+      # 12. 构建
+      # ========================================
       - name: Build XP 32-bit EXE
         shell: cmd
         run: |
@@ -101,30 +140,33 @@ jobs:
             --noconfirm ^
             --clean ^
             --onefile ^
-            --windowed ^
+            --console ^
             --name ImageSizer_XP32 ^
             ImageSizer.py
 
-      # =========================
-      # 10. 检查 EXE
-      # =========================
+      # ========================================
+      # 13. 检查 EXE
+      # ========================================
       - name: Verify EXE
         shell: powershell
         run: |
+
           if (!(Test-Path "dist\ImageSizer_XP32.exe")) {
             throw "EXE was not generated."
           }
 
+          Write-Host "===== EXE ====="
+
           Get-Item "dist\ImageSizer_XP32.exe" |
             Format-List Name,Length,FullName
 
-      # =========================
-      # 11. 上传 EXE
-      # =========================
+      # ========================================
+      # 14. 上传 EXE
+      # ========================================
       - name: Upload EXE
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v4
         with:
-          name: ImageSizer-Windows-XP-32bit
+          name: ImageSizer-Windows-XP-32bit-Debug
           path: dist/ImageSizer_XP32.exe
           if-no-files-found: error
           retention-days: 30
