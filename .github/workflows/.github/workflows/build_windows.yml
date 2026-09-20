@@ -1,0 +1,82 @@
+name: Build Windows XP 32-bit Portable EXE
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-xp32:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download Python 3.4.4 x86
+        shell: powershell
+        run: |
+          Invoke-WebRequest `
+            -Uri "https://www.python.org/ftp/python/3.4.4/python-3.4.4.msi" `
+            -OutFile "$env:RUNNER_TEMP\python-3.4.4-x86.msi"
+
+      - name: Install Python 3.4.4 x86
+        shell: powershell
+        run: |
+          Start-Process msiexec.exe `
+            -ArgumentList "/i `"$env:RUNNER_TEMP\python-3.4.4-x86.msi`" /qn TARGETDIR=C:\Python34x86 ALLUSERS=1" `
+            -Wait `
+            -NoNewWindow
+
+          if (!(Test-Path "C:\Python34x86\python.exe")) {
+            throw "Python 3.4.4 x86 installation failed."
+          }
+
+      - name: Install compatible pip
+        shell: cmd
+        run: |
+          C:\Python34x86\python.exe -m pip install --upgrade "pip==19.1.1"
+          C:\Python34x86\python.exe -m pip --version
+
+      - name: Install Pillow for Python 3.4 x86
+        shell: cmd
+        run: |
+          C:\Python34x86\python.exe -m pip install --only-binary=:all: "Pillow==5.4.1"
+
+      - name: Install PyInstaller XP-compatible version
+        shell: cmd
+        run: |
+          C:\Python34x86\python.exe -m pip install "PyInstaller==3.4"
+
+      - name: Check Python architecture
+        shell: cmd
+        run: |
+          C:\Python34x86\python.exe -c "import struct; print('Python bits:', struct.calcsize('P') * 8); assert struct.calcsize('P') == 4"
+
+      - name: Build single-file EXE
+        shell: cmd
+        run: |
+          C:\Python34x86\Scripts\pyinstaller.exe ^
+            --noconfirm ^
+            --clean ^
+            --onefile ^
+            --windowed ^
+            --name ImageSizer_XP32 ^
+            ImageSizer.py
+
+      - name: Verify
+        shell: powershell
+        run: |
+          if (!(Test-Path "dist\ImageSizer_XP32.exe")) {
+            throw "ImageSizer_XP32.exe was not generated."
+          }
+          Get-Item "dist\ImageSizer_XP32.exe" | Format-List Name,Length,FullName
+
+      - name: Upload XP 32-bit EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: ImageSizer-Windows-XP-32bit
+          path: dist/ImageSizer_XP32.exe
+          if-no-files-found: error
+          retention-days: 30
