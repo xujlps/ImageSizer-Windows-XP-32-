@@ -1,4 +1,4 @@
-name: Build Windows XP 32-bit Portable EXE
+name: Build Windows XP 32-bit JPG EXE
 
 on:
   workflow_dispatch:
@@ -8,6 +8,7 @@ permissions:
 
 jobs:
   build-xp32:
+
     runs-on: windows-latest
 
     steps:
@@ -52,28 +53,26 @@ jobs:
         shell: cmd
         run: |
           C:\Python34x86\python.exe -m pip install --upgrade "pip==19.1.1"
+
           C:\Python34x86\python.exe -m pip --version
 
       # ========================================
-      # 5. 安装 Pillow
-      # ========================================
-      - name: Install Pillow
-        shell: cmd
-        run: |
-          C:\Python34x86\python.exe -m pip install --no-cache-dir "Pillow==5.4.1"
-
-      # ========================================
-      # 6. 安装 PyInstaller 依赖
+      # 5. 安装 PyInstaller
+      #
+      # 注意：
+      # 这里已经完全删除 Pillow
       # ========================================
       - name: Install PyInstaller dependencies
         shell: cmd
         run: |
           C:\Python34x86\python.exe -m pip install --no-cache-dir "altgraph==0.16.1"
+
           C:\Python34x86\python.exe -m pip install --no-cache-dir "pywin32-ctypes==0.2.0"
+
           C:\Python34x86\python.exe -m pip install --no-cache-dir "pefile==2018.8.8"
 
       # ========================================
-      # 7. 安装 PyInstaller 3.4
+      # 6. 安装 PyInstaller 3.4
       # ========================================
       - name: Install PyInstaller
         shell: cmd
@@ -81,49 +80,27 @@ jobs:
           C:\Python34x86\python.exe -m pip install --no-cache-dir --no-deps "PyInstaller==3.4"
 
       # ========================================
-      # 8. 验证 Python
+      # 7. 验证 Python
       # ========================================
       - name: Verify Python
         shell: cmd
         run: |
           C:\Python34x86\python.exe --version
 
-          C:\Python34x86\python.exe -c "import sys; print('Python executable:', sys.executable)"
+          C:\Python34x86\python.exe -c "import sys; print(sys.executable)"
 
           C:\Python34x86\python.exe -c "import struct; print('Python bits:', struct.calcsize('P') * 8)"
 
       # ========================================
-      # 9. 验证 Pillow
+      # 8. 验证没有 Pillow
       # ========================================
-      - name: Verify Pillow
+      - name: Verify no Pillow dependency
         shell: cmd
         run: |
-          C:\Python34x86\python.exe -c "import PIL; print('Pillow:', PIL.__version__)"
-
-          C:\Python34x86\python.exe -c "import PIL.Image; print('PIL.Image OK')"
-
-          C:\Python34x86\python.exe -c "import PIL._imaging; print('PIL._imaging OK')"
+          C:\Python34x86\python.exe -c "import tkinter; print('Tkinter OK')"
 
       # ========================================
-      # 10. 显示 Pillow 文件
-      # ========================================
-      - name: Inspect Pillow
-        shell: powershell
-        run: |
-          Write-Host "===== Pillow directory ====="
-          Get-ChildItem "C:\Python34x86\Lib\site-packages\PIL" |
-            Select-Object Name, Length
-
-          Write-Host ""
-          Write-Host "===== Imaging files ====="
-
-          Get-ChildItem `
-            "C:\Python34x86\Lib\site-packages\PIL" `
-            -Filter "*imaging*" |
-            Select-Object FullName, Length
-
-      # ========================================
-      # 11. 验证 PyInstaller
+      # 9. 验证 PyInstaller
       # ========================================
       - name: Verify PyInstaller
         shell: cmd
@@ -131,7 +108,10 @@ jobs:
           C:\Python34x86\Scripts\pyinstaller.exe --version
 
       # ========================================
-      # 12. 构建
+      # 10. 构建 XP 32位 EXE
+      #
+      # 第一次先使用 console
+      # 方便 XP 出错时查看信息
       # ========================================
       - name: Build XP 32-bit EXE
         shell: cmd
@@ -145,7 +125,7 @@ jobs:
             ImageSizer.py
 
       # ========================================
-      # 13. 检查 EXE
+      # 11. 检查 EXE
       # ========================================
       - name: Verify EXE
         shell: powershell
@@ -155,18 +135,20 @@ jobs:
             throw "EXE was not generated."
           }
 
-          Write-Host "===== EXE ====="
+          Write-Host "================================"
+          Write-Host "ImageSizer XP32 EXE"
+          Write-Host "================================"
 
           Get-Item "dist\ImageSizer_XP32.exe" |
             Format-List Name,Length,FullName
 
       # ========================================
-      # 14. 上传 EXE
+      # 12. 上传 EXE
       # ========================================
       - name: Upload EXE
         uses: actions/upload-artifact@v4
         with:
-          name: ImageSizer-Windows-XP-32bit-Debug
+          name: ImageSizer-Windows-XP-32bit-JPG
           path: dist/ImageSizer_XP32.exe
           if-no-files-found: error
           retention-days: 30
