@@ -12,32 +12,55 @@ jobs:
 
     steps:
 
-      # =========================
+      # ==========================================
       # 1. 获取源码
-      # =========================
+      # ==========================================
       - name: Checkout
         uses: actions/checkout@v5
 
-      # =========================
-      # 2. 下载 Python 3.4.4 x86
-      # =========================
+
+      # ==========================================
+      # 2. 下载 Python 3.4.4 32-bit
+      # ==========================================
       - name: Download Python 3.4.4 x86
         shell: powershell
         run: |
-          Invoke-WebRequest `
-            -Uri "https://www.python.org/ftp/python/3.4.4/python-3.4.4.msi" `
-            -OutFile "$env:RUNNER_TEMP\python-3.4.4-x86.msi"
+          $url = "https://www.python.org/ftp/python/3.4.4/python-3.4.4.msi"
+          $out = "$env:RUNNER_TEMP\python-3.4.4-x86.msi"
 
-      # =========================
+          Write-Host "Downloading Python 3.4.4 x86..."
+          Write-Host $url
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $out
+
+          if (!(Test-Path $out)) {
+            throw "Python installer was not downloaded."
+          }
+
+          Get-Item $out |
+            Format-List Name,Length,FullName
+
+
+      # ==========================================
       # 3. 安装 Python 3.4.4 x86
-      # =========================
+      # ==========================================
       - name: Install Python 3.4.4 x86
         shell: powershell
         run: |
-          Start-Process msiexec.exe `
-            -ArgumentList "/i `"$env:RUNNER_TEMP\python-3.4.4-x86.msi`" /qn TARGETDIR=C:\Python34x86 ALLUSERS=1" `
+          $msi = "$env:RUNNER_TEMP\python-3.4.4-x86.msi"
+
+          Write-Host "Installing Python 3.4.4 x86..."
+
+          $process = Start-Process `
+            msiexec.exe `
+            -ArgumentList "/i `"$msi`" /qn TARGETDIR=C:\Python34x86 ALLUSERS=1" `
             -Wait `
+            -PassThru `
             -NoNewWindow
+
+          Write-Host "MSI exit code:" $process.ExitCode
 
           if (!(Test-Path "C:\Python34x86\python.exe")) {
             throw "Python 3.4.4 x86 installation failed."
@@ -45,56 +68,136 @@ jobs:
 
           C:\Python34x86\python.exe --version
 
-      # =========================
-      # 4. 安装适用于 Python 3.4 的 pip
-      # =========================
+
+      # ==========================================
+      # 4. 验证 Python 是否为 32 位
+      # ==========================================
+      - name: Verify Python architecture
+        shell: cmd
+        run: |
+          C:\Python34x86\python.exe -c "import platform; print('Python:', platform.python_version()); print('Architecture:', platform.architecture()); print('Machine:', platform.machine())"
+
+
+      # ==========================================
+      # 5. 安装兼容 Python 3.4 的 pip
+      # ==========================================
       - name: Install compatible pip
         shell: cmd
         run: |
           C:\Python34x86\python.exe -m pip install --upgrade "pip==19.1.1"
+
           C:\Python34x86\python.exe -m pip --version
 
-      # =========================
-      # 5. 安装 Pillow
-      # =========================
-      - name: Install Pillow
+
+      # ==========================================
+      # 6. 安装 Pillow 5.4.1
+      # ==========================================
+      - name: Install Pillow 5.4.1
         shell: cmd
         run: |
           C:\Python34x86\python.exe -m pip install "Pillow==5.4.1"
 
-      # =========================
-      # 6. 安装 PyInstaller 老版本依赖
-      # =========================
-      - name: Install PyInstaller dependencies
+          C:\Python34x86\python.exe -c "import PIL; print('Pillow:', PIL.__version__)"
+
+
+      # ==========================================
+      # 7. 安装 PyInstaller 兼容依赖
+      #
+      # 特别锁定 pefile 版本。
+      #
+      # 之前失败的原因就是 pip 自动安装：
+      #
+      # pefile-2021.5.13
+      #
+      # 该版本包含 Python 3.6+ 的 f-string，
+      # Python 3.4 无法解析。
+      # ==========================================
+      - name: Install PyInstaller compatible dependencies
         shell: cmd
         run: |
           C:\Python34x86\python.exe -m pip install "altgraph==0.16.1"
+
           C:\Python34x86\python.exe -m pip install "pywin32-ctypes==0.2.0"
+
           C:\Python34x86\python.exe -m pip install "pefile==2018.8.8"
 
-      # =========================
-      # 7. 安装 PyInstaller 3.4
-      # =========================
-      - name: Install PyInstaller
+
+      # ==========================================
+      # 8. 验证 PyInstaller 依赖
+      # ==========================================
+      - name: Verify PyInstaller dependencies
+        shell: cmd
+        run: |
+          C:\Python34x86\python.exe -c "import pefile; print('pefile:', pefile.__version__)"
+
+          C:\Python34x86\python.exe -c "import altgraph; print('altgraph:', altgraph.__version__)"
+
+          C:\Python34x86\python.exe -c "import PIL; print('Pillow:', PIL.__version__)"
+
+
+      # ==========================================
+      # 9. 安装 PyInstaller 3.4
+      #
+      # 使用 --no-deps 防止 pip 再次自动拉取
+      # 最新 pefile。
+      # ==========================================
+      - name: Install PyInstaller 3.4
         shell: cmd
         run: |
           C:\Python34x86\python.exe -m pip install --no-deps "PyInstaller==3.4"
 
-      # =========================
-      # 8. 验证构建环境
-      # =========================
-      - name: Verify build environment
-        shell: cmd
-        run: |
-          C:\Python34x86\python.exe -c "import pefile; print('pefile:', pefile.__version__)"
-          C:\Python34x86\python.exe -c "import altgraph; print('altgraph:', altgraph.__version__)"
-          C:\Python34x86\python.exe -c "import PIL; print('Pillow:', PIL.__version__)"
           C:\Python34x86\Scripts\pyinstaller.exe --version
 
-      # =========================
-      # 9. 构建 XP 32 位 EXE
-      # =========================
-      - name: Build XP 32-bit EXE
+
+      # ==========================================
+      # 10. 检查源码
+      # ==========================================
+      - name: Verify source files
+        shell: powershell
+        run: |
+          Write-Host "Current directory:"
+          Get-Location
+
+          Write-Host ""
+          Write-Host "Repository files:"
+          Get-ChildItem -Force
+
+          if (!(Test-Path "ImageSizer.py")) {
+            throw "ImageSizer.py was not found."
+          }
+
+          Write-Host ""
+          Write-Host "ImageSizer.py found."
+
+
+      # ==========================================
+      # 11. 用 Python 直接测试源码
+      #
+      # 不真正启动 GUI，只检查语法和导入。
+      # ==========================================
+      - name: Test ImageSizer Python source
+        shell: cmd
+        run: |
+          C:\Python34x86\python.exe -m py_compile ImageSizer.py
+
+          if errorlevel 1 (
+            echo Python source compilation failed.
+            exit /b 1
+          )
+
+          echo Python source compilation OK.
+
+
+      # ==========================================
+      # 12. 构建诊断版 EXE
+      #
+      # 注意：
+      # --console 不使用 --windowed
+      #
+      # 这样 XP 上如果启动失败，
+      # 可以直接看到 Traceback。
+      # ==========================================
+      - name: Build diagnostic EXE
         shell: cmd
         run: |
           C:\Python34x86\Scripts\pyinstaller.exe ^
@@ -105,22 +208,100 @@ jobs:
             --name ImageSizer_XP32_Debug ^
             ImageSizer.py
 
-      # =========================
-      # 10. 检查 EXE
-      # =========================
+          if errorlevel 1 (
+            echo.
+            echo ========================================
+            echo PyInstaller BUILD FAILED
+            echo ========================================
+            exit /b 1
+          )
+
+
+      # ==========================================
+      # 13. 显示 build / dist 内容
+      # ==========================================
+      - name: Show build output
+        shell: powershell
+        run: |
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "BUILD DIRECTORY"
+          Write-Host "========================================"
+
+          if (Test-Path "build") {
+            Get-ChildItem "build" -Recurse -Force |
+              Select-Object FullName,Length
+          }
+          else {
+            Write-Host "build directory does not exist."
+          }
+
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "DIST DIRECTORY"
+          Write-Host "========================================"
+
+          if (Test-Path "dist") {
+            Get-ChildItem "dist" -Recurse -Force |
+              Select-Object FullName,Length
+          }
+          else {
+            Write-Host "dist directory does not exist."
+          }
+
+
+      # ==========================================
+      # 14. 验证诊断版 EXE
+      # ==========================================
       - name: Verify diagnostic EXE
         shell: powershell
         run: |
-          if (!(Test-Path "dist\ImageSizer_XP32_Debug.exe")) {
+          $exe = "dist\ImageSizer_XP32_Debug.exe"
+
+          if (!(Test-Path $exe)) {
+
+            Write-Host ""
+            Write-Host "========================================"
+            Write-Host "ERROR: EXE WAS NOT GENERATED"
+            Write-Host "========================================"
+
+            Write-Host ""
+            Write-Host "DIST DIRECTORY:"
+
+            if (Test-Path "dist") {
+              Get-ChildItem "dist" -Recurse -Force |
+                Format-List FullName,Length
+            }
+            else {
+              Write-Host "dist directory does not exist."
+            }
+
+            Write-Host ""
+            Write-Host "BUILD DIRECTORY:"
+
+            if (Test-Path "build") {
+              Get-ChildItem "build" -Recurse -Force |
+                Format-List FullName,Length
+            }
+            else {
+              Write-Host "build directory does not exist."
+            }
+
             throw "Diagnostic EXE was not generated."
           }
 
-          Get-Item "dist\ImageSizer_XP32_Debug.exe" |
+          Write-Host ""
+          Write-Host "========================================"
+          Write-Host "EXE GENERATED SUCCESSFULLY"
+          Write-Host "========================================"
+
+          Get-Item $exe |
             Format-List Name,Length,FullName
 
-      # =========================
-      # 11. 上传 EXE
-      # =========================
+
+      # ==========================================
+      # 15. 上传诊断版 EXE
+      # ==========================================
       - name: Upload diagnostic EXE
         uses: actions/upload-artifact@v6
         with:
