@@ -1,85 +1,620 @@
 # -*- coding: utf-8 -*-
+
 """
-ImageSizer - Windows 图片尺寸/文件大小压缩工具
-License: MIT
+ImageSizer XP JPG 专用版
+
+功能：
+1. 只支持 JPG / JPEG
+2. Windows XP SP3 32位兼容
+3. 不使用 Pillow
+4. 使用 Windows GDI+ 处理图片
+5. 支持拖拽 JPG
+6. 支持批量压缩
+7. 支持最大宽度
+8. 支持最大高度
+9. 支持最大文件大小 KB
+10. 自动寻找合适 JPEG Quality
 """
 
+import os
 import io
-import threading
 import ctypes
+import threading
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
-from pathlib import Path
-
-from PIL import Image
-
-
-SUPPORTED = {
-    ".jpg",
-    ".jpeg",
-    ".png",
-    ".webp",
-    ".bmp",
-    ".tif",
-    ".tiff",
-}
 
 
 # ============================================================
-# EXIF 图片方向处理
-# 兼容 Pillow 5.4
+# Windows / GDI+
 # ============================================================
 
-def apply_exif_orientation(img):
-    """Pillow 5.4-compatible EXIF orientation handling."""
+gdi32 = ctypes.windll.gdi32
+gdiplus = ctypes.windll.gdiplus
+user32 = ctypes.windll.user32
+shell32 = ctypes.windll.shell32
+kernel32 = ctypes.windll.kernel32
+
+
+# ============================================================
+# GDI+ 基础结构
+# ============================================================
+
+class GdiplusStartupInput(ctypes.Structure):
+    _fields_ = [
+        ("GdiplusVersion", ctypes.c_uint32),
+        ("DebugEventCallback", ctypes.c_void_p),
+        ("SuppressBackgroundThread", ctypes.c_bool),
+        ("SuppressExternalCodecs", ctypes.c_bool),
+    ]
+
+
+class Rect(ctypes.Structure):
+    _fields_ = [
+        ("X", ctypes.c_int),
+        ("Y", ctypes.c_int),
+        ("Width", ctypes.c_int),
+        ("Height", ctypes.c_int),
+    ]
+
+
+class EncoderParameter(ctypes.Structure):
+    _fields_ = [
+        ("Guid", ctypes.c_ubyte * 16),
+        ("NumberOfValues", ctypes.c_ulong),
+        ("Type", ctypes.c_ulong),
+        ("Value", ctypes.c_void_p),
+    ]
+
+
+class EncoderParameters(ctypes.Structure):
+    _fields_ = [
+        ("Count", ctypes.c_uint),
+        ("Parameter", EncoderParameter * 1),
+    ]
+
+
+# ============================================================
+# GDI+ 常量
+# ============================================================
+
+PixelFormat24bppRGB = 0x00021808
+
+ImageLockModeRead = 0x0001
+ImageLockModeWrite = 0x0002
+
+UnitPixel = 2
+
+InterpolationModeHighQualityBicubic = 7
+SmoothingModeHighQuality = 4
+CompositingQualityHighQuality = 4
+
+
+# JPEG Encoder CLSID
+# {557CF401-1A04-11D3-9A73-0000F81EF32E}
+JPEG_ENCODER_CLSID = (
+    0x01, 0xF4, 0x7C, 0x55,
+    0x04, 0x1A,
+    0xD3, 0x11,
+    0x9A, 0x73,
+    0x00, 0x00, 0xF8, 0x1E, 0xF3, 0x2E
+)
+
+# Encoder Quality GUID
+# {1D5BE4B5-FA4A-452D-9CDD-5DB35105E7EB}
+QUALITY_GUID = (
+    0xB5, 0xE4, 0x5B, 0x1D,
+    0x4A, 0xFA,
+    0x2D, 0x45,
+    0x9C, 0xDD,
+    0x5D, 0xB3, 0x51, 0x05, 0xE7, 0xEB
+)
+
+
+# ============================================================
+# GDI+ 初始化
+# ============================================================
+
+gdiplus_token = ctypes.c_void_p()
+
+
+def gdiplus_init():
+    global gdiplus_token
+
+    startup_input = GdiplusStartupInput()
+    startup_input.GdiplusVersion = 1
+    startup_input.DebugEventCallback = None
+    startup_input.SuppressBackgroundThread = False
+    startup_input.SuppressExternalCodecs = False
+
+    status = gdiplus.GdiplusStartup(
+        ctypes.byref(gdiplus_token),
+        ctypes.byref(startup_input),
+        None
+    )
+
+    if status != 0:
+        raise RuntimeError(
+            "Windows GDI+ 初始化失败，错误代码：{}".format(status)
+        )
+
+
+def gdiplus_shutdown():
+    global gdiplus_token
+
+    if gdiplus_token:
+        gdiplus.GdiplusShutdown(gdiplus_token)
+        gdiplus_token = ctypes.c_void_p()
+
+
+# ============================================================
+# GDI+ API
+# ============================================================
+
+gdiplus.GdipLoadImageFromFile.argtypes = [
+    ctypes.c_wchar_p,
+    ctypes.POINTER(ctypes.c_void_p)
+]
+gdiplus.GdipLoadImageFromFile.restype = ctypes.c_int
+
+gdiplus.GdipGetImageWidth.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint)
+]
+gdiplus.GdipGetImageWidth.restype = ctypes.c_int
+
+gdiplus.GdipGetImageHeight.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_uint)
+]
+gdiplus.GdipGetImageHeight.restype = ctypes.c_int
+
+gdiplus.GdipCreateBitmapFromScan0.argtypes = [
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_void_p)
+]
+gdiplus.GdipCreateBitmapFromScan0.restype = ctypes.c_int
+
+gdiplus.GdipGetImageGraphicsContext.argtypes = [
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_void_p)
+]
+gdiplus.GdipGetImageGraphicsContext.restype = ctypes.c_int
+
+gdiplus.GdipGraphicsClear.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_uint
+]
+gdiplus.GdipGraphicsClear.restype = ctypes.c_int
+
+gdiplus.GdipSetInterpolationMode.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_int
+]
+gdiplus.GdipSetInterpolationMode.restype = ctypes.c_int
+
+gdiplus.GdipSetSmoothingMode.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_int
+]
+gdiplus.GdipSetSmoothingMode.restype = ctypes.c_int
+
+gdiplus.GdipSetCompositingQuality.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_int
+]
+gdiplus.GdipSetCompositingQuality.restype = ctypes.c_int
+
+gdiplus.GdipDrawImageRectI.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_void_p,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int,
+    ctypes.c_int
+]
+gdiplus.GdipDrawImageRectI.restype = ctypes.c_int
+
+gdiplus.GdipSaveImageToFile.argtypes = [
+    ctypes.c_void_p,
+    ctypes.c_wchar_p,
+    ctypes.POINTER(ctypes.c_ubyte),
+    ctypes.c_void_p
+]
+gdiplus.GdipSaveImageToFile.restype = ctypes.c_int
+
+gdiplus.GdipDeleteGraphics.argtypes = [
+    ctypes.c_void_p
+]
+gdiplus.GdipDeleteGraphics.restype = ctypes.c_int
+
+gdiplus.GdipDisposeImage.argtypes = [
+    ctypes.c_void_p
+]
+gdiplus.GdipDisposeImage.restype = ctypes.c_int
+
+
+# ============================================================
+# GUID 转换
+# ============================================================
+
+def guid_bytes(values):
+    arr = (ctypes.c_ubyte * 16)()
+    for i in range(16):
+        arr[i] = values[i]
+    return arr
+
+
+# ============================================================
+# JPEG 保存
+# ============================================================
+
+def save_jpeg(image, filename, quality):
+    quality_value = ctypes.c_ulong(int(quality))
+
+    parameter = EncoderParameter()
+
+    guid = guid_bytes(QUALITY_GUID)
+
+    for i in range(16):
+        parameter.Guid[i] = guid[i]
+
+    parameter.NumberOfValues = 1
+    parameter.Type = 4
+    parameter.Value = ctypes.cast(
+        ctypes.pointer(quality_value),
+        ctypes.c_void_p
+    )
+
+    parameters = EncoderParameters()
+    parameters.Count = 1
+    parameters.Parameter[0] = parameter
+
+    encoder_clsid = guid_bytes(JPEG_ENCODER_CLSID)
+
+    status = gdiplus.GdipSaveImageToFile(
+        image,
+        ctypes.c_wchar_p(filename),
+        encoder_clsid,
+        ctypes.byref(parameters)
+    )
+
+    if status != 0:
+        raise RuntimeError(
+            "保存 JPEG 失败，GDI+ 错误代码：{}".format(status)
+        )
+
+
+# ============================================================
+# 获取图片尺寸
+# ============================================================
+
+def get_image_size(filename):
+    image = ctypes.c_void_p()
+
+    status = gdiplus.GdipLoadImageFromFile(
+        ctypes.c_wchar_p(filename),
+        ctypes.byref(image)
+    )
+
+    if status != 0:
+        raise RuntimeError(
+            "无法打开 JPG 文件，GDI+ 错误代码：{}".format(status)
+        )
 
     try:
-        exif = img._getexif()
-        orientation = exif.get(274) if exif else None
-    except Exception:
-        orientation = None
+        width = ctypes.c_uint()
+        height = ctypes.c_uint()
 
-    methods = {
-        2: Image.FLIP_LEFT_RIGHT,
-        3: Image.ROTATE_180,
-        4: Image.FLIP_TOP_BOTTOM,
-        5: Image.TRANSPOSE,
-        6: Image.ROTATE_270,
-        7: Image.TRANSVERSE,
-        8: Image.ROTATE_90,
-    }
+        status = gdiplus.GdipGetImageWidth(
+            image,
+            ctypes.byref(width)
+        )
 
-    if orientation in methods:
-        return img.transpose(methods[orientation])
+        if status != 0:
+            raise RuntimeError("无法读取图片宽度。")
 
-    return img.copy()
+        status = gdiplus.GdipGetImageHeight(
+            image,
+            ctypes.byref(height)
+        )
+
+        if status != 0:
+            raise RuntimeError("无法读取图片高度。")
+
+        return width.value, height.value
+
+    finally:
+        gdiplus.GdipDisposeImage(image)
 
 
 # ============================================================
-# Windows 原生拖放
-# 不依赖 tkinterdnd2
+# 计算缩放尺寸
+# ============================================================
+
+def fit_size(width, height, max_width, max_height):
+    scale_w = float(max_width) / float(width)
+    scale_h = float(max_height) / float(height)
+
+    scale = min(scale_w, scale_h, 1.0)
+
+    new_width = max(1, int(round(width * scale)))
+    new_height = max(1, int(round(height * scale)))
+
+    return new_width, new_height
+
+
+# ============================================================
+# GDI+ 缩放并保存
+# ============================================================
+
+def resize_and_save(src, dst, width, height, quality):
+    source = ctypes.c_void_p()
+    target = ctypes.c_void_p()
+    graphics = ctypes.c_void_p()
+
+    try:
+
+        status = gdiplus.GdipLoadImageFromFile(
+            ctypes.c_wchar_p(src),
+            ctypes.byref(source)
+        )
+
+        if status != 0:
+            raise RuntimeError(
+                "无法打开图片，GDI+ 错误代码：{}".format(status)
+            )
+
+        status = gdiplus.GdipCreateBitmapFromScan0(
+            width,
+            height,
+            0,
+            PixelFormat24bppRGB,
+            None,
+            ctypes.byref(target)
+        )
+
+        if status != 0:
+            raise RuntimeError(
+                "创建目标图片失败，GDI+ 错误代码：{}".format(status)
+            )
+
+        status = gdiplus.GdipGetImageGraphicsContext(
+            target,
+            ctypes.byref(graphics)
+        )
+
+        if status != 0:
+            raise RuntimeError(
+                "创建绘图环境失败，GDI+ 错误代码：{}".format(status)
+            )
+
+        gdiplus.GdipSetInterpolationMode(
+            graphics,
+            InterpolationModeHighQualityBicubic
+        )
+
+        gdiplus.GdipSetSmoothingMode(
+            graphics,
+            SmoothingModeHighQuality
+        )
+
+        gdiplus.GdipSetCompositingQuality(
+            graphics,
+            CompositingQualityHighQuality
+        )
+
+        # 白色背景
+        gdiplus.GdipGraphicsClear(
+            graphics,
+            0xFFFFFFFF
+        )
+
+        status = gdiplus.GdipDrawImageRectI(
+            graphics,
+            source,
+            0,
+            0,
+            width,
+            height
+        )
+
+        if status != 0:
+            raise RuntimeError(
+                "图片缩放失败，GDI+ 错误代码：{}".format(status)
+            )
+
+        save_jpeg(
+            target,
+            dst,
+            quality
+        )
+
+    finally:
+
+        if graphics:
+            gdiplus.GdipDeleteGraphics(graphics)
+
+        if target:
+            gdiplus.GdipDisposeImage(target)
+
+        if source:
+            gdiplus.GdipDisposeImage(source)
+
+
+# ============================================================
+# 单张图片压缩
+# ============================================================
+
+def compress_image(src, dst, max_width, max_height, max_kb):
+
+    original_width, original_height = get_image_size(src)
+
+    width, height = fit_size(
+        original_width,
+        original_height,
+        max_width,
+        max_height
+    )
+
+    target_bytes = max_kb * 1024
+
+    # 先使用最高质量
+    resize_and_save(
+        src,
+        dst,
+        width,
+        height,
+        95
+    )
+
+    size = os.path.getsize(dst)
+
+    if size <= target_bytes:
+        return (
+            width,
+            height,
+            95,
+            size
+        )
+
+    # 二分寻找 JPEG Quality
+    low = 10
+    high = 94
+
+    best_quality = None
+    best_size = None
+
+    temp_file = dst + ".tmp.jpg"
+
+    while low <= high:
+
+        quality = (low + high) // 2
+
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except Exception:
+                pass
+
+        resize_and_save(
+            src,
+            temp_file,
+            width,
+            height,
+            quality
+        )
+
+        current_size = os.path.getsize(temp_file)
+
+        if current_size <= target_bytes:
+
+            best_quality = quality
+            best_size = current_size
+
+            low = quality + 1
+
+        else:
+
+            high = quality - 1
+
+    if best_quality is None:
+
+        # 即使 Quality=10 仍然超过目标大小
+        # 继续降低图片尺寸
+        new_width = width
+        new_height = height
+
+        while True:
+
+            new_width = max(
+                160,
+                int(new_width * 0.9)
+            )
+
+            new_height = max(
+                160,
+                int(new_height * 0.9)
+            )
+
+            if os.path.exists(temp_file):
+                try:
+                    os.remove(temp_file)
+                except Exception:
+                    pass
+
+            resize_and_save(
+                src,
+                temp_file,
+                new_width,
+                new_height,
+                10
+            )
+
+            current_size = os.path.getsize(
+                temp_file
+            )
+
+            if current_size <= target_bytes:
+
+                width = new_width
+                height = new_height
+
+                best_quality = 10
+                best_size = current_size
+
+                break
+
+            if new_width <= 160 or new_height <= 160:
+
+                raise RuntimeError(
+                    "目标文件大小过小，无法满足 {} KB。".format(
+                        max_kb
+                    )
+                )
+
+    if os.path.exists(dst):
+        try:
+            os.remove(dst)
+        except Exception:
+            pass
+
+    os.rename(
+        temp_file,
+        dst
+    )
+
+    return (
+        width,
+        height,
+        best_quality,
+        best_size
+    )
+
+
+# ============================================================
+# Windows 原生拖拽
 # ============================================================
 
 WM_DROPFILES = 0x0233
 GWL_WNDPROC = -4
-
-_user32 = ctypes.windll.user32
-_shell32 = ctypes.windll.shell32
-
 
 _WNDPROC = ctypes.WINFUNCTYPE(
     ctypes.c_long,
     ctypes.c_void_p,
     ctypes.c_uint,
     ctypes.c_size_t,
-    ctypes.c_ssize_t,
+    ctypes.c_size_t
 )
 
 
 class NativeDropHandler(object):
-    """Windows 原生 WM_DROPFILES 拖放，不依赖 tkinterdnd2。"""
 
     def __init__(self, widgets, callback):
+
         self.callback = callback
         self.old_procs = []
         self.procs = []
@@ -88,12 +623,17 @@ class NativeDropHandler(object):
 
             hwnd = widget.winfo_id()
 
-            proc = _WNDPROC(self._wnd_proc)
+            proc = _WNDPROC(
+                self._wnd_proc
+            )
 
-            old_proc = _user32.SetWindowLongW(
+            old_proc = user32.SetWindowLongW(
                 hwnd,
                 GWL_WNDPROC,
-                ctypes.cast(proc, ctypes.c_void_p).value,
+                ctypes.cast(
+                    proc,
+                    ctypes.c_void_p
+                ).value
             )
 
             self.procs.append(proc)
@@ -101,7 +641,7 @@ class NativeDropHandler(object):
                 (hwnd, old_proc)
             )
 
-            _shell32.DragAcceptFiles(
+            shell32.DragAcceptFiles(
                 hwnd,
                 True
             )
@@ -120,7 +660,9 @@ class NativeDropHandler(object):
                 self._read_files(wparam)
 
             finally:
-                _shell32.DragFinish(wparam)
+                shell32.DragFinish(
+                    wparam
+                )
 
             return 0
 
@@ -132,7 +674,7 @@ class NativeDropHandler(object):
                 old_proc = proc
                 break
 
-        return _user32.CallWindowProcW(
+        return user32.CallWindowProcW(
             old_proc,
             hwnd,
             msg,
@@ -142,7 +684,7 @@ class NativeDropHandler(object):
 
     def _read_files(self, hdrop):
 
-        count = _shell32.DragQueryFileW(
+        count = shell32.DragQueryFileW(
             hdrop,
             0xFFFFFFFF,
             None,
@@ -153,26 +695,26 @@ class NativeDropHandler(object):
 
         for i in range(count):
 
-            length = _shell32.DragQueryFileW(
+            length = shell32.DragQueryFileW(
                 hdrop,
                 i,
                 None,
                 0
             )
 
-            buf = ctypes.create_unicode_buffer(
+            buffer = ctypes.create_unicode_buffer(
                 length + 1
             )
 
-            _shell32.DragQueryFileW(
+            shell32.DragQueryFileW(
                 hdrop,
                 i,
-                buf,
+                buffer,
                 length + 1
             )
 
             files.append(
-                buf.value
+                buffer.value
             )
 
         if files:
@@ -180,260 +722,17 @@ class NativeDropHandler(object):
 
 
 # ============================================================
-# 计算最大尺寸
-# ============================================================
-
-def fit_size(
-    w,
-    h,
-    max_w,
-    max_h
-):
-
-    scale = min(
-        float(max_w) / float(w),
-        float(max_h) / float(h),
-        1.0
-    )
-
-    return (
-        max(
-            1,
-            int(round(w * scale))
-        ),
-        max(
-            1,
-            int(round(h * scale))
-        )
-    )
-
-
-# ============================================================
-# JPEG 编码
-# ============================================================
-
-def encode_jpeg(
-    img,
-    quality
-):
-
-    # JPEG 不支持透明通道
-    if img.mode in (
-        "RGBA",
-        "LA"
-    ):
-
-        bg = Image.new(
-            "RGB",
-            img.size,
-            "white"
-        )
-
-        bg.paste(
-            img,
-            mask=img.getchannel("A")
-        )
-
-        img = bg
-
-    elif img.mode != "RGB":
-
-        img = img.convert(
-            "RGB"
-        )
-
-    bio = io.BytesIO()
-
-    img.save(
-        bio,
-        format="JPEG",
-        quality=quality,
-        optimize=True,
-        progressive=True,
-        subsampling="4:2:0"
-    )
-
-    return bio.getvalue()
-
-
-# ============================================================
-# 图片压缩
-# ============================================================
-
-def compress_image(
-    src,
-    dst,
-    max_w,
-    max_h,
-    max_kb
-):
-
-    # 关键：
-    # 传给 Pillow 的路径统一转换成 str
-    with Image.open(str(src)) as original:
-
-        # EXIF 方向修正
-        img = apply_exif_orientation(
-            original
-        )
-
-        # 计算尺寸
-        w, h = fit_size(
-            img.width,
-            img.height,
-            max_w,
-            max_h
-        )
-
-        if (w, h) != img.size:
-
-            img = img.resize(
-                (w, h),
-                Image.ANTIALIAS
-            )
-
-        target = max_kb * 1024
-
-        # ----------------------------------------------------
-        # 第一次尝试：质量 95
-        # ----------------------------------------------------
-
-        data = encode_jpeg(
-            img,
-            95
-        )
-
-        if len(data) <= target:
-
-            quality = 95
-
-        else:
-
-            # ------------------------------------------------
-            # 二分查找最高可用质量
-            # ------------------------------------------------
-
-            lo = 20
-            hi = 94
-
-            best = None
-            best_q = None
-
-            while lo <= hi:
-
-                q = (
-                    lo + hi
-                ) // 2
-
-                candidate = encode_jpeg(
-                    img,
-                    q
-                )
-
-                if len(candidate) <= target:
-
-                    best = candidate
-                    best_q = q
-
-                    lo = q + 1
-
-                else:
-
-                    hi = q - 1
-
-            # ------------------------------------------------
-            # 如果最低质量仍然太大
-            # 缩小图片尺寸继续尝试
-            # ------------------------------------------------
-
-            if best is None:
-
-                while (
-                    img.width > 320
-                    and img.height > 320
-                ):
-
-                    nw = max(
-                        1,
-                        int(
-                            round(
-                                img.width * 0.9
-                            )
-                        )
-                    )
-
-                    nh = max(
-                        1,
-                        int(
-                            round(
-                                img.height * 0.9
-                            )
-                        )
-                    )
-
-                    img = img.resize(
-                        (nw, nh),
-                        Image.ANTIALIAS
-                    )
-
-                    candidate = encode_jpeg(
-                        img,
-                        20
-                    )
-
-                    if len(candidate) <= target:
-
-                        best = candidate
-                        best_q = 20
-
-                        break
-
-            if best is None:
-
-                raise ValueError(
-                    "目标文件大小过小，无法生成满足要求的图片。"
-                    "请提高目标 KB。"
-                )
-
-            data = best
-            quality = best_q
-
-        # ----------------------------------------------------
-        # 写入文件
-        #
-        # 这里必须 str(dst)
-        # 防止旧版 Python / 打包环境不接受 WindowsPath
-        # ----------------------------------------------------
-
-        with open(
-            str(dst),
-            "wb"
-        ) as fp:
-
-            fp.write(data)
-
-        return (
-            img.size,
-            quality,
-            len(data)
-        )
-
-
-# ============================================================
-# 主程序
+# GUI
 # ============================================================
 
 class App(object):
 
-    def __init__(
-        self,
-        root
-    ):
+    def __init__(self, root):
 
         self.root = root
 
         self.root.title(
-            "ImageSizer - 图片尺寸与文件大小压缩工具"
+            "ImageSizer XP - JPG 图片压缩工具"
         )
 
         self.root.geometry(
@@ -447,7 +746,6 @@ class App(object):
 
         self.files = []
 
-        # 默认参数
         self.max_w = tk.StringVar(
             value="1920"
         )
@@ -463,7 +761,7 @@ class App(object):
         self.out_dir = tk.StringVar()
 
         self.status = tk.StringVar(
-            value="等待添加图片"
+            value="等待添加 JPG 图片"
         )
 
         self.progress = tk.DoubleVar(
@@ -472,70 +770,67 @@ class App(object):
 
         self.build_ui()
 
-        # Windows 原生拖放
-        self.drop_handler = NativeDropHandler(
-            [
-                self.root,
-                self.drop
-            ],
-            self.add_files
-        )
+        try:
 
+            self.drop_handler = NativeDropHandler(
+                [
+                    self.root,
+                    self.drop
+                ],
+                self.add_files
+            )
 
-    # ========================================================
-    # 创建 UI
-    # ========================================================
+        except Exception as e:
+
+            self.drop_handler = None
+
+            self.status.set(
+                "拖拽功能初始化失败，可使用“选择图片”"
+            )
+
+    # --------------------------------------------------------
+    # UI
+    # --------------------------------------------------------
 
     def build_ui(self):
 
         style = ttk.Style()
 
         try:
-
             style.theme_use(
                 "vista"
             )
-
         except Exception:
             pass
 
-        frm = ttk.Frame(
+        frame = ttk.Frame(
             self.root,
             padding=16
         )
 
-        frm.pack(
+        frame.pack(
             fill="both",
             expand=True
         )
 
         ttk.Label(
-            frm,
-            text="ImageSizer",
-            font=(
-                "Segoe UI",
-                20,
-                "bold"
-            )
+            frame,
+            text="ImageSizer XP",
+            font=("Segoe UI", 20, "bold")
         ).pack(
             anchor="w"
         )
 
         ttk.Label(
-            frm,
-            text="拖入图片 → 设置最大尺寸和文件大小 → 一键压缩",
-            foreground="#666666"
+            frame,
+            text="JPG 专用 · 图片尺寸与文件大小压缩工具"
         ).pack(
             anchor="w",
             pady=(2, 12)
         )
 
-        # ----------------------------------------------------
-        # 输出限制
-        # ----------------------------------------------------
-
         settings = ttk.LabelFrame(
-            frm,
+            frame,
             text="输出限制",
             padding=12
         )
@@ -601,19 +896,12 @@ class App(object):
             padx=8
         )
 
-        # ----------------------------------------------------
-        # 图片拖放区域
-        # ----------------------------------------------------
-
         self.drop = tk.Text(
-            frm,
+            frame,
             height=12,
             relief="groove",
             borderwidth=1,
-            font=(
-                "Segoe UI",
-                10
-            )
+            font=("Segoe UI", 10)
         )
 
         self.drop.pack(
@@ -624,7 +912,7 @@ class App(object):
 
         self.drop.insert(
             "1.0",
-            "把 JPG / PNG / WebP / BMP / TIFF 图片拖到这里\n\n"
+            "把 JPG / JPEG 图片拖到这里\n\n"
             "也可以点击下面的“选择图片”按钮。"
         )
 
@@ -632,12 +920,8 @@ class App(object):
             state="disabled"
         )
 
-        # ----------------------------------------------------
-        # 按钮
-        # ----------------------------------------------------
-
         buttons = ttk.Frame(
-            frm
+            frame
         )
 
         buttons.pack(
@@ -669,28 +953,24 @@ class App(object):
             side="right"
         )
 
-        # ----------------------------------------------------
-        # 输出目录
-        # ----------------------------------------------------
-
-        out = ttk.Frame(
-            frm
+        output = ttk.Frame(
+            frame
         )
 
-        out.pack(
+        output.pack(
             fill="x",
             pady=(12, 0)
         )
 
         ttk.Label(
-            out,
+            output,
             text="输出目录："
         ).pack(
             side="left"
         )
 
         ttk.Entry(
-            out,
+            output,
             textvariable=self.out_dir
         ).pack(
             side="left",
@@ -700,19 +980,15 @@ class App(object):
         )
 
         ttk.Button(
-            out,
+            output,
             text="浏览",
             command=self.choose_dir
         ).pack(
             side="right"
         )
 
-        # ----------------------------------------------------
-        # 进度条
-        # ----------------------------------------------------
-
         ttk.Progressbar(
-            frm,
+            frame,
             variable=self.progress,
             maximum=100
         ).pack(
@@ -721,25 +997,24 @@ class App(object):
         )
 
         ttk.Label(
-            frm,
+            frame,
             textvariable=self.status
         ).pack(
             anchor="w"
         )
 
-
-    # ========================================================
-    # 选择图片
-    # ========================================================
+    # --------------------------------------------------------
+    # 添加文件
+    # --------------------------------------------------------
 
     def choose_files(self):
 
         files = filedialog.askopenfilenames(
-            title="选择图片",
+            title="选择 JPG 图片",
             filetypes=[
                 (
-                    "图片",
-                    "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff"
+                    "JPG 图片",
+                    "*.jpg *.jpeg"
                 ),
                 (
                     "所有文件",
@@ -748,46 +1023,54 @@ class App(object):
             ]
         )
 
-        self.add_files(
-            files
-        )
+        self.add_files(files)
 
-
-    # ========================================================
-    # 添加图片
-    # ========================================================
-
-    def add_files(
-        self,
-        files
-    ):
+    def add_files(self, files):
 
         added = 0
 
-        for f in files:
+        for filename in files:
 
-            p = Path(f)
+            filename = str(filename)
 
-            try:
-
-                is_file = p.is_file()
-                suffix = p.suffix.lower()
-
-            except Exception:
-
+            if not os.path.isfile(filename):
                 continue
 
-            if (
-                is_file
-                and suffix in SUPPORTED
-                and str(p) not in self.files
+            ext = os.path.splitext(
+                filename
+            )[1].lower()
+
+            if ext not in (
+                ".jpg",
+                ".jpeg"
             ):
+                continue
+
+            if filename not in self.files:
 
                 self.files.append(
-                    str(p)
+                    filename
                 )
 
                 added += 1
+
+        self.refresh_file_list()
+
+        if added:
+
+            self.status.set(
+                "已添加 {} 张 JPG 图片".format(
+                    len(self.files)
+                )
+            )
+
+        else:
+
+            self.status.set(
+                "没有新增 JPG 图片"
+            )
+
+    def refresh_file_list(self):
 
         self.drop.configure(
             state="normal"
@@ -802,12 +1085,12 @@ class App(object):
 
             self.drop.insert(
                 "1.0",
-                "已添加 {} 张图片\n\n".format(
+                "已添加 {} 张 JPG 图片\n\n".format(
                     len(self.files)
                 )
             )
 
-            for i, f in enumerate(
+            for i, filename in enumerate(
                 self.files,
                 1
             ):
@@ -816,7 +1099,9 @@ class App(object):
                     "end",
                     "{}. {}\n".format(
                         i,
-                        Path(f).name
+                        os.path.basename(
+                            filename
+                        )
                     )
                 )
 
@@ -824,84 +1109,50 @@ class App(object):
 
             self.drop.insert(
                 "1.0",
-                "请拖入图片或点击“选择图片”。"
+                "把 JPG / JPEG 图片拖到这里\n\n"
+                "也可以点击下面的“选择图片”按钮。"
             )
 
         self.drop.configure(
             state="disabled"
         )
 
-        if added:
-
-            self.status.set(
-                "已添加 {} 张图片".format(
-                    len(self.files)
-                )
-            )
-
-        else:
-
-            self.status.set(
-                "没有新增图片"
-            )
-
-
-    # ========================================================
+    # --------------------------------------------------------
     # 清空
-    # ========================================================
+    # --------------------------------------------------------
 
     def clear_files(self):
 
         self.files[:] = []
 
-        self.drop.configure(
-            state="normal"
-        )
-
-        self.drop.delete(
-            "1.0",
-            "end"
-        )
-
-        self.drop.insert(
-            "1.0",
-            "把 JPG / PNG / WebP / BMP / TIFF 图片拖到这里\n\n"
-            "也可以点击下面的“选择图片”按钮。"
-        )
-
-        self.drop.configure(
-            state="disabled"
-        )
+        self.refresh_file_list()
 
         self.progress.set(
             0
         )
 
         self.status.set(
-            "等待添加图片"
+            "等待添加 JPG 图片"
         )
 
-
-    # ========================================================
-    # 选择输出目录
-    # ========================================================
+    # --------------------------------------------------------
+    # 输出目录
+    # --------------------------------------------------------
 
     def choose_dir(self):
 
-        d = filedialog.askdirectory(
+        directory = filedialog.askdirectory(
             title="选择输出目录"
         )
 
-        if d:
-
+        if directory:
             self.out_dir.set(
-                d
+                directory
             )
 
-
-    # ========================================================
-    # 开始压缩
-    # ========================================================
+    # --------------------------------------------------------
+    # 开始
+    # --------------------------------------------------------
 
     def start(self):
 
@@ -909,94 +1160,76 @@ class App(object):
 
             messagebox.showwarning(
                 "提示",
-                "请先添加图片。"
+                "请先添加 JPG 图片。"
             )
 
             return
 
-        # ----------------------------------------------------
-        # 检查参数
-        # ----------------------------------------------------
-
         try:
 
-            mw = int(
+            max_width = int(
                 self.max_w.get()
             )
 
-            mh = int(
+            max_height = int(
                 self.max_h.get()
             )
 
-            kb = int(
+            max_kb = int(
                 self.max_kb.get()
             )
 
             if (
-                mw < 1
-                or mh < 1
-                or kb < 1
+                max_width < 1
+                or max_height < 1
+                or max_kb < 1
             ):
-
                 raise ValueError
 
         except ValueError:
 
             messagebox.showerror(
                 "参数错误",
-                "最大宽度、最大高度、最大文件大小必须是正整数。"
+                "最大宽度、最大高度、"
+                "最大文件大小必须是正整数。"
             )
 
             return
 
-        # ----------------------------------------------------
-        # 输出目录
-        # ----------------------------------------------------
-
         if self.out_dir.get():
 
-            out = Path(
-                self.out_dir.get()
-            )
+            output_dir = self.out_dir.get()
 
         else:
 
-            out = (
-                Path(self.files[0]).parent
-                / "ImageSizer_Output"
+            output_dir = os.path.join(
+                os.path.dirname(
+                    self.files[0]
+                ),
+                "ImageSizer_Output"
             )
 
-        # ----------------------------------------------------
-        # 创建输出目录
-        #
-        # 不使用 exist_ok=True
-        # 兼容旧版 Python
-        # ----------------------------------------------------
-
-        if not out.exists():
+        if not os.path.exists(
+            output_dir
+        ):
 
             try:
 
-                out.mkdir(
-                    parents=True
+                os.makedirs(
+                    output_dir
                 )
 
-            except OSError:
+            except Exception as e:
 
-                if not out.exists():
-
-                    messagebox.showerror(
-                        "错误",
-                        "无法创建输出目录：\n{}".format(
-                            str(out)
-                        )
+                messagebox.showerror(
+                    "错误",
+                    "无法创建输出目录：\n{}\n\n{}".format(
+                        output_dir,
+                        e
                     )
+                )
 
-                    return
-
-        # ----------------------------------------------------
-        # 开始
-        # ----------------------------------------------------
+                return
 
         self.progress.set(
             0
@@ -1009,76 +1242,73 @@ class App(object):
         threading.Thread(
             target=self.worker,
             args=(
-                mw,
-                mh,
-                kb,
-                out
-            ),
-            daemon=True
+                max_width,
+                max_height,
+                max_kb,
+                output_dir
+            )
         ).start()
 
-
-    # ========================================================
-    # 后台压缩线程
-    # ========================================================
+    # --------------------------------------------------------
+    # 后台处理
+    # --------------------------------------------------------
 
     def worker(
         self,
-        mw,
-        mh,
-        kb,
-        out
+        max_width,
+        max_height,
+        max_kb,
+        output_dir
     ):
 
-        ok = 0
+        success = 0
         errors = []
 
         total = len(
             self.files
         )
 
-        for i, src in enumerate(
+        for index, src in enumerate(
             self.files,
             1
         ):
 
             try:
 
-                name = (
-                    Path(src).stem
-                    + "_compressed.jpg"
+                filename = os.path.splitext(
+                    os.path.basename(src)
+                )[0]
+
+                dst = os.path.join(
+                    output_dir,
+                    filename + "_compressed.jpg"
                 )
 
-                dst = out / name
-
-                # 关键：
-                # 传入 compress_image 时转换成 str
-                size, quality, bytes_written = compress_image(
-                    str(src),
-                    str(dst),
-                    mw,
-                    mh,
-                    kb
+                width, height, quality, size = compress_image(
+                    src,
+                    dst,
+                    max_width,
+                    max_height,
+                    max_kb
                 )
 
-                ok += 1
+                success += 1
 
                 self.root.after(
                     0,
-                    lambda
-                    i=i,
-                    size=size,
-                    q=quality,
-                    b=bytes_written:
-
+                    lambda index=index,
+                    width=width,
+                    height=height,
+                    quality=quality,
+                    size=size:
                     self.status.set(
                         "{}/{}：{}×{}，质量 {}，{:.1f} KB".format(
-                            i,
+                            index,
                             total,
-                            size[0],
-                            size[1],
-                            q,
-                            b / 1024.0
+                            width,
+                            height,
+                            quality,
+                            size / 1024.0
                         )
                     )
                 )
@@ -1087,36 +1317,36 @@ class App(object):
 
                 errors.append(
                     "{}: {}".format(
-                        Path(src).name,
+                        os.path.basename(src),
                         e
                     )
                 )
 
+            progress = (
+                index /
+                float(total)
+            ) * 100
+
             self.root.after(
                 0,
-                lambda i=i:
-
+                lambda progress=progress:
                 self.progress.set(
-                    i / float(total) * 100
+                    progress
                 )
             )
 
-        # ----------------------------------------------------
-        # 完成信息
-        # ----------------------------------------------------
-
-        msg = (
-            "完成：{}/{} 张\n"
+        message = (
+            "完成：{}/{} 张\n\n"
             "输出目录：{}".format(
-                ok,
+                success,
                 total,
-                str(out)
+                output_dir
             )
         )
 
         if errors:
 
-            msg += (
+            message += (
                 "\n\n失败文件：\n"
                 + "\n".join(
                     errors[:10]
@@ -1125,7 +1355,7 @@ class App(object):
 
             if len(errors) > 10:
 
-                msg += (
+                message += (
                     "\n……还有 {} 个文件失败".format(
                         len(errors) - 10
                     )
@@ -1133,23 +1363,20 @@ class App(object):
 
         self.root.after(
             0,
-            lambda msg=msg:
-
+            lambda message=message:
             messagebox.showinfo(
                 "处理完成",
-                msg
+                message
             )
         )
 
         self.root.after(
             0,
-            lambda
-            ok=ok,
+            lambda success=success,
             total=total:
-
             self.status.set(
                 "完成：{}/{} 张".format(
-                    ok,
+                    success,
                     total
                 )
             )
@@ -1162,10 +1389,35 @@ class App(object):
 
 if __name__ == "__main__":
 
-    root = tk.Tk()
+    try:
 
-    App(
-        root
-    )
+        gdiplus_init()
 
-    root.mainloop()
+        root = tk.Tk()
+
+        app = App(root)
+
+        root.protocol(
+            "WM_DELETE_WINDOW",
+            lambda: (
+                gdiplus_shutdown(),
+                root.destroy()
+            )
+        )
+
+        root.mainloop()
+
+    except Exception as e:
+
+        try:
+            messagebox.showerror(
+                "ImageSizer 启动错误",
+                str(e)
+            )
+        except Exception:
+            pass
+
+        try:
+            gdiplus_shutdown()
+        except Exception:
+            pass
