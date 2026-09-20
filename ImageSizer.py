@@ -460,115 +460,189 @@ def compress_image(src, dst, max_width, max_height, max_kb):
         max_height
     )
 
-    target_bytes = max_kb * 1024
-
-    # 先使用最高质量
-    resize_and_save(
-        src,
-        dst,
-        width,
-        height,
-        95
-    )
-
-    size = os.path.getsize(dst)
-
-    if size <= target_bytes:
-        return (
-            width,
-            height,
-            95,
-            size
-        )
-
-    # 二分寻找 JPEG Quality
-    low = 10
-    high = 94
-
-    best_quality = None
-    best_size = None
+    # ========================================================
+    # 硬性文件大小上限
+    #
+    # 用户输入 500 KB -> 最大允许 512000 bytes
+    # 最终输出文件必须满足：
+    #     os.path.getsize(dst) <= target_bytes
+    #
+    # 不采用“显示值四舍五入”判断，而是直接比较真实字节数。
+    # ========================================================
+    target_bytes = int(max_kb) * 1024
 
     temp_file = dst + ".tmp.jpg"
 
-    while low <= high:
-
-        quality = (low + high) // 2
-
-        if os.path.exists(temp_file):
+    def remove_if_exists(filename):
+        if os.path.exists(filename):
             try:
-                os.remove(temp_file)
+                os.remove(filename)
             except Exception:
                 pass
+
+    def save_and_check(test_width, test_height, quality):
+        remove_if_exists(temp_file)
 
         resize_and_save(
             src,
             temp_file,
-            width,
-            height,
+            test_width,
+            test_height,
             quality
         )
 
-        current_size = os.path.getsize(temp_file)
+        if not os.path.exists(temp_file):
+            raise RuntimeError("JPEG 临时文件没有生成。")
 
-        if current_size <= target_bytes:
+        actual_size = os.path.getsize(temp_file)
 
-            best_quality = quality
-            best_size = current_size
+        return actual_size
 
-            low = quality + 1
+    try:
 
-        else:
-
-            high = quality - 1
-
-    if best_quality is None:
-
-        # 即使 Quality=10 仍然超过目标大小
-        # 继续降低图片尺寸
-        new_width = width
-        new_height = height
+        current_width = width
+        current_height = height
 
         while True:
 
-            new_width = max(
-                160,
-                int(new_width * 0.9)
-            )
+            # ------------------------------------------------
+            # 第一阶段：二分寻找“仍然不超过上限”的最高质量
+            # ------------------------------------------------
+            low = 10
+            high = 95
 
-            new_height = max(
-                160,
-                int(new_height * 0.9)
-            )
+            best_quality = None
+            best_size = None
 
-            if os.path.exists(temp_file):
-                try:
-                    os.remove(temp_file)
-                except Exception:
-                    pass
+            while low <= high:
 
-            resize_and_save(
-                src,
-                temp_file,
-                new_width,
-                new_height,
-                10
-            )
+                quality = (low + high) // 2
 
-            current_size = os.path.getsize(
-                temp_file
-            )
+                current_size = save_and_check(
+                    current_width,
+                    current_height,
+                    quality
+                )
 
-            if current_size <= target_bytes:
+                if current_size <= target_bytes:
 
-                width = new_width
-                height = new_height
+                    best_quality = quality
+                    best_size = current_size
 
-                best_quality = 10
-                best_size = current_size
+                    # 尝试更高质量
+                    low = quality + 1
 
-                break
+                else:
 
-            if new_width <= 160 or new_height <= 160:
+                    # 超过上限，降低质量
+                    high = quality - 1
+
+            # ------------------------------------------------
+            # 第二阶段：极端情况下二分法没有找到结果时，
+            # 从 Quality 10 开始逐级尝试。
+            #
+            # 这样不依赖 JPEG 文件大小与 Quality 严格单调，
+            # 进一步提高兼容性。
+            # ------------------------------------------------
+            if best_quality is None:
+
+                for quality in range(10, 96):
+
+                    current_size = save_and_check(
+                        current_width,
+                        current_height,
+                        quality
+                    )
+
+                    if current_size <= target_bytes:
+
+                        best_quality = quality
+                        best_size = current_size
+                        break
+
+            # ------------------------------------------------
+            # 找到了满足大小限制的 JPEG
+            # ------------------------------------------------
+            if best_quality is not None:
+
+                # 再重新生成一次最终文件。
+                # 不直接相信前面的临时结果，最后必须重新检查。
+                final_size = save_and_check(
+                    current_width,
+                    current_height,
+                    best_quality
+                )
+
+                # 硬性检查：真实字节数必须 <= 用户输入上限。
+                if final_size <= target_bytes:
+
+                    # 先删除旧输出，再把已验证合格的临时文件移动过去。
+                    if os.path.exists(dst):
+                        try:
+                            os.remove(dst)
+                        except Exception:
+                            pass
+
+                    os.rename(
+                        temp_file,
+                        dst
+                    )
+
+                    # 移动后再次读取真实文件大小。
+                    # 只有再次通过，才允许返回成功。
+                    verified_size = os.path.getsize(dst)
+
+                    if verified_size <= target_bytes:
+
+                        return (
+                            current_width,
+                            current_height,
+                            best_quality,
+                            verified_size
+                        )
+
+                    # 理论上不会发生。
+                    # 如果发生，绝不保留超限文件。
+                    try:
+                        os.remove(dst)
+                    except Exception:
+                        pass
+
+                    raise RuntimeError(
+                        "最终 JPEG 文件超过用户设置的 {} KB，"
+                        "已拒绝输出超限文件。".format(
+                            max_kb
+                        )
+                    )
+
+            # ------------------------------------------------
+            # 当前尺寸即使 Quality=10 也无法满足大小限制。
+            # 必须降低分辨率。
+            # ------------------------------------------------
+            new_width = int(current_width * 0.90)
+            new_height = int(current_height * 0.90)
+
+            # 至少缩小 1 像素，防止整数取整后尺寸不变。
+            if new_width >= current_width:
+                new_width = current_width - 1
+
+            if new_height >= current_height:
+                new_height = current_height - 1
+
+            # 防止进入 0 或负数。
+            new_width = max(1, new_width)
+            new_height = max(1, new_height)
+
+            # 如果已经无法继续缩小，最后一次用 Quality=10
+            # 做严格检查；如果仍超限，则明确失败。
+            if (
+                new_width < 1
+                or new_height < 1
+                or (
+                    new_width == current_width
+                    and new_height == current_height
+                )
+            ):
 
                 raise RuntimeError(
                     "目标文件大小过小，无法满足 {} KB。".format(
@@ -576,23 +650,13 @@ def compress_image(src, dst, max_width, max_height, max_kb):
                     )
                 )
 
-    if os.path.exists(dst):
-        try:
-            os.remove(dst)
-        except Exception:
-            pass
+            current_width = new_width
+            current_height = new_height
 
-    os.rename(
-        temp_file,
-        dst
-    )
+    finally:
 
-    return (
-        width,
-        height,
-        best_quality,
-        best_size
-    )
+        # 无论成功还是失败，都不留下 .tmp.jpg。
+        remove_if_exists(temp_file)
 
 
 # ============================================================
