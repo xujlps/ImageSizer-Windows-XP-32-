@@ -120,7 +120,7 @@ jobs:
             --noconfirm ^
             --clean ^
             --onefile ^
-            --console ^
+            --windowed ^
             --name ImageSizer_XP32 ^
             ImageSizer.py
 
