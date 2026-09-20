@@ -5,7 +5,6 @@ License: MIT
 """
 
 import io
-import os
 import threading
 import ctypes
 import tkinter as tk
@@ -33,6 +32,7 @@ SUPPORTED = {
 
 def apply_exif_orientation(img):
     """Pillow 5.4-compatible EXIF orientation handling."""
+
     try:
         exif = img._getexif()
         orientation = exif.get(274) if exif else None
@@ -56,7 +56,7 @@ def apply_exif_orientation(img):
 
 
 # ============================================================
-# Windows 原生文件拖放
+# Windows 原生拖放
 # 不依赖 tkinterdnd2
 # ============================================================
 
@@ -85,6 +85,7 @@ class NativeDropHandler(object):
         self.procs = []
 
         for widget in widgets:
+
             hwnd = widget.winfo_id()
 
             proc = _WNDPROC(self._wnd_proc)
@@ -96,14 +97,28 @@ class NativeDropHandler(object):
             )
 
             self.procs.append(proc)
-            self.old_procs.append((hwnd, old_proc))
+            self.old_procs.append(
+                (hwnd, old_proc)
+            )
 
-            _shell32.DragAcceptFiles(hwnd, True)
+            _shell32.DragAcceptFiles(
+                hwnd,
+                True
+            )
 
-    def _wnd_proc(self, hwnd, msg, wparam, lparam):
+    def _wnd_proc(
+        self,
+        hwnd,
+        msg,
+        wparam,
+        lparam
+    ):
+
         if msg == WM_DROPFILES:
+
             try:
                 self._read_files(wparam)
+
             finally:
                 _shell32.DragFinish(wparam)
 
@@ -112,6 +127,7 @@ class NativeDropHandler(object):
         old_proc = 0
 
         for old_hwnd, proc in self.old_procs:
+
             if old_hwnd == hwnd:
                 old_proc = proc
                 break
@@ -121,56 +137,74 @@ class NativeDropHandler(object):
             hwnd,
             msg,
             wparam,
-            lparam,
+            lparam
         )
 
     def _read_files(self, hdrop):
+
         count = _shell32.DragQueryFileW(
             hdrop,
             0xFFFFFFFF,
             None,
-            0,
+            0
         )
 
         files = []
 
         for i in range(count):
+
             length = _shell32.DragQueryFileW(
                 hdrop,
                 i,
                 None,
-                0,
+                0
             )
 
-            buf = ctypes.create_unicode_buffer(length + 1)
+            buf = ctypes.create_unicode_buffer(
+                length + 1
+            )
 
             _shell32.DragQueryFileW(
                 hdrop,
                 i,
                 buf,
-                length + 1,
+                length + 1
             )
 
-            files.append(buf.value)
+            files.append(
+                buf.value
+            )
 
         if files:
             self.callback(files)
 
 
 # ============================================================
-# 图片尺寸计算
+# 计算最大尺寸
 # ============================================================
 
-def fit_size(w, h, max_w, max_h):
+def fit_size(
+    w,
+    h,
+    max_w,
+    max_h
+):
+
     scale = min(
         float(max_w) / float(w),
         float(max_h) / float(h),
-        1.0,
+        1.0
     )
 
     return (
-        max(1, int(round(w * scale))),
-        max(1, int(round(h * scale))),
+        max(
+            1,
+            int(round(w * scale))
+        ),
+        max(
+            1,
+            int(round(h * scale))
+        )
     )
 
 
@@ -178,30 +212,35 @@ def fit_size(w, h, max_w, max_h):
 # JPEG 编码
 # ============================================================
 
-def encode_jpeg(img, quality):
-    """
-    将图片转换成 JPEG。
+def encode_jpeg(
+    img,
+    quality
+):
 
-    JPEG 不支持透明通道：
-    RGBA / LA 图片使用白色背景。
-    """
+    # JPEG 不支持透明通道
+    if img.mode in (
+        "RGBA",
+        "LA"
+    ):
 
-    if img.mode in ("RGBA", "LA"):
         bg = Image.new(
             "RGB",
             img.size,
-            "white",
+            "white"
         )
 
         bg.paste(
             img,
-            mask=img.getchannel("A"),
+            mask=img.getchannel("A")
         )
 
         img = bg
 
     elif img.mode != "RGB":
-        img = img.convert("RGB")
+
+        img = img.convert(
+            "RGB"
+        )
 
     bio = io.BytesIO()
 
@@ -211,46 +250,57 @@ def encode_jpeg(img, quality):
         quality=quality,
         optimize=True,
         progressive=True,
-        subsampling="4:2:0",
+        subsampling="4:2:0"
     )
 
     return bio.getvalue()
 
 
 # ============================================================
-# 单张图片压缩
+# 图片压缩
 # ============================================================
 
-def compress_image(src, dst, max_w, max_h, max_kb):
+def compress_image(
+    src,
+    dst,
+    max_w,
+    max_h,
+    max_kb
+):
 
-    with Image.open(src) as original:
+    # 关键：
+    # 传给 Pillow 的路径统一转换成 str
+    with Image.open(str(src)) as original:
 
         # EXIF 方向修正
-        img = apply_exif_orientation(original)
+        img = apply_exif_orientation(
+            original
+        )
 
-        # 限制最大尺寸
+        # 计算尺寸
         w, h = fit_size(
             img.width,
             img.height,
             max_w,
-            max_h,
+            max_h
         )
 
         if (w, h) != img.size:
+
             img = img.resize(
                 (w, h),
-                Image.ANTIALIAS,
+                Image.ANTIALIAS
             )
 
         target = max_kb * 1024
 
         # ----------------------------------------------------
-        # 第一轮：质量 95
+        # 第一次尝试：质量 95
         # ----------------------------------------------------
 
         data = encode_jpeg(
             img,
-            95,
+            95
         )
 
         if len(data) <= target:
@@ -260,7 +310,7 @@ def compress_image(src, dst, max_w, max_h, max_kb):
         else:
 
             # ------------------------------------------------
-            # 第二轮：二分寻找最高 JPEG 质量
+            # 二分查找最高可用质量
             # ------------------------------------------------
 
             lo = 20
@@ -271,11 +321,13 @@ def compress_image(src, dst, max_w, max_h, max_kb):
 
             while lo <= hi:
 
-                q = (lo + hi) // 2
+                q = (
+                    lo + hi
+                ) // 2
 
                 candidate = encode_jpeg(
                     img,
-                    q,
+                    q
                 )
 
                 if len(candidate) <= target:
@@ -290,8 +342,8 @@ def compress_image(src, dst, max_w, max_h, max_kb):
                     hi = q - 1
 
             # ------------------------------------------------
-            # 如果质量最低仍然超过限制
-            # 逐步缩小图片尺寸
+            # 如果最低质量仍然太大
+            # 缩小图片尺寸继续尝试
             # ------------------------------------------------
 
             if best is None:
@@ -303,22 +355,30 @@ def compress_image(src, dst, max_w, max_h, max_kb):
 
                     nw = max(
                         1,
-                        int(round(img.width * 0.9)),
+                        int(
+                            round(
+                                img.width * 0.9
+                            )
+                        )
                     )
 
                     nh = max(
                         1,
-                        int(round(img.height * 0.9)),
+                        int(
+                            round(
+                                img.height * 0.9
+                            )
+                        )
                     )
 
                     img = img.resize(
                         (nw, nh),
-                        Image.ANTIALIAS,
+                        Image.ANTIALIAS
                     )
 
                     candidate = encode_jpeg(
                         img,
-                        20,
+                        20
                     )
 
                     if len(candidate) <= target:
@@ -327,10 +387,6 @@ def compress_image(src, dst, max_w, max_h, max_kb):
                         best_q = 20
 
                         break
-
-            # ------------------------------------------------
-            # 仍然无法达到目标
-            # ------------------------------------------------
 
             if best is None:
 
@@ -343,12 +399,15 @@ def compress_image(src, dst, max_w, max_h, max_kb):
             quality = best_q
 
         # ----------------------------------------------------
-        # 写入输出文件
+        # 写入文件
+        #
+        # 这里必须 str(dst)
+        # 防止旧版 Python / 打包环境不接受 WindowsPath
         # ----------------------------------------------------
 
         with open(
-            dst,
-            "wb",
+            str(dst),
+            "wb"
         ) as fp:
 
             fp.write(data)
@@ -356,7 +415,7 @@ def compress_image(src, dst, max_w, max_h, max_kb):
         return (
             img.size,
             quality,
-            len(data),
+            len(data)
         )
 
 
@@ -366,7 +425,10 @@ def compress_image(src, dst, max_w, max_h, max_kb):
 
 class App(object):
 
-    def __init__(self, root):
+    def __init__(
+        self,
+        root
+    ):
 
         self.root = root
 
@@ -410,21 +472,18 @@ class App(object):
 
         self.build_ui()
 
-        # ----------------------------------------------------
         # Windows 原生拖放
-        # ----------------------------------------------------
-
         self.drop_handler = NativeDropHandler(
             [
                 self.root,
-                self.drop,
+                self.drop
             ],
-            self.add_files,
+            self.add_files
         )
 
 
     # ========================================================
-    # UI
+    # 创建 UI
     # ========================================================
 
     def build_ui(self):
@@ -432,20 +491,22 @@ class App(object):
         style = ttk.Style()
 
         try:
+
             style.theme_use(
                 "vista"
             )
+
         except Exception:
             pass
 
         frm = ttk.Frame(
             self.root,
-            padding=16,
+            padding=16
         )
 
         frm.pack(
             fill="both",
-            expand=True,
+            expand=True
         )
 
         ttk.Label(
@@ -454,8 +515,8 @@ class App(object):
             font=(
                 "Segoe UI",
                 20,
-                "bold",
-            ),
+                "bold"
+            )
         ).pack(
             anchor="w"
         )
@@ -463,10 +524,10 @@ class App(object):
         ttk.Label(
             frm,
             text="拖入图片 → 设置最大尺寸和文件大小 → 一键压缩",
-            foreground="#666666",
+            foreground="#666666"
         ).pack(
             anchor="w",
-            pady=(2, 12),
+            pady=(2, 12)
         )
 
         # ----------------------------------------------------
@@ -476,7 +537,7 @@ class App(object):
         settings = ttk.LabelFrame(
             frm,
             text="输出限制",
-            padding=12,
+            padding=12
         )
 
         settings.pack(
@@ -485,63 +546,63 @@ class App(object):
 
         ttk.Label(
             settings,
-            text="最大宽度（px）",
+            text="最大宽度（px）"
         ).grid(
             row=0,
             column=0,
-            sticky="w",
+            sticky="w"
         )
 
         ttk.Entry(
             settings,
             textvariable=self.max_w,
-            width=12,
+            width=12
         ).grid(
             row=0,
             column=1,
-            padx=(8, 20),
+            padx=(8, 20)
         )
 
         ttk.Label(
             settings,
-            text="最大高度（px）",
+            text="最大高度（px）"
         ).grid(
             row=0,
             column=2,
-            sticky="w",
+            sticky="w"
         )
 
         ttk.Entry(
             settings,
             textvariable=self.max_h,
-            width=12,
+            width=12
         ).grid(
             row=0,
             column=3,
-            padx=(8, 20),
+            padx=(8, 20)
         )
 
         ttk.Label(
             settings,
-            text="最大文件大小（KB）",
+            text="最大文件大小（KB）"
         ).grid(
             row=0,
             column=4,
-            sticky="w",
+            sticky="w"
         )
 
         ttk.Entry(
             settings,
             textvariable=self.max_kb,
-            width=12,
+            width=12
         ).grid(
             row=0,
             column=5,
-            padx=8,
+            padx=8
         )
 
         # ----------------------------------------------------
-        # 拖放区域
+        # 图片拖放区域
         # ----------------------------------------------------
 
         self.drop = tk.Text(
@@ -551,20 +612,20 @@ class App(object):
             borderwidth=1,
             font=(
                 "Segoe UI",
-                10,
-            ),
+                10
+            )
         )
 
         self.drop.pack(
             fill="both",
             expand=True,
-            pady=14,
+            pady=14
         )
 
         self.drop.insert(
             "1.0",
             "把 JPG / PNG / WebP / BMP / TIFF 图片拖到这里\n\n"
-            "也可以点击下面的“选择图片”按钮。",
+            "也可以点击下面的“选择图片”按钮。"
         )
 
         self.drop.configure(
@@ -586,7 +647,7 @@ class App(object):
         ttk.Button(
             buttons,
             text="选择图片",
-            command=self.choose_files,
+            command=self.choose_files
         ).pack(
             side="left"
         )
@@ -594,16 +655,16 @@ class App(object):
         ttk.Button(
             buttons,
             text="清空",
-            command=self.clear_files,
+            command=self.clear_files
         ).pack(
             side="left",
-            padx=8,
+            padx=8
         )
 
         ttk.Button(
             buttons,
             text="开始压缩",
-            command=self.start,
+            command=self.start
         ).pack(
             side="right"
         )
@@ -618,30 +679,30 @@ class App(object):
 
         out.pack(
             fill="x",
-            pady=(12, 0),
+            pady=(12, 0)
         )
 
         ttk.Label(
             out,
-            text="输出目录：",
+            text="输出目录："
         ).pack(
             side="left"
         )
 
         ttk.Entry(
             out,
-            textvariable=self.out_dir,
+            textvariable=self.out_dir
         ).pack(
             side="left",
             fill="x",
             expand=True,
-            padx=6,
+            padx=6
         )
 
         ttk.Button(
             out,
             text="浏览",
-            command=self.choose_dir,
+            command=self.choose_dir
         ).pack(
             side="right"
         )
@@ -653,15 +714,15 @@ class App(object):
         ttk.Progressbar(
             frm,
             variable=self.progress,
-            maximum=100,
+            maximum=100
         ).pack(
             fill="x",
-            pady=(12, 4),
+            pady=(12, 4)
         )
 
         ttk.Label(
             frm,
-            textvariable=self.status,
+            textvariable=self.status
         ).pack(
             anchor="w"
         )
@@ -678,13 +739,13 @@ class App(object):
             filetypes=[
                 (
                     "图片",
-                    "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff",
+                    "*.jpg *.jpeg *.png *.webp *.bmp *.tif *.tiff"
                 ),
                 (
                     "所有文件",
-                    "*.*",
-                ),
-            ],
+                    "*.*"
+                )
+            ]
         )
 
         self.add_files(
@@ -696,7 +757,10 @@ class App(object):
     # 添加图片
     # ========================================================
 
-    def add_files(self, files):
+    def add_files(
+        self,
+        files
+    ):
 
         added = 0
 
@@ -705,9 +769,12 @@ class App(object):
             p = Path(f)
 
             try:
+
                 is_file = p.is_file()
                 suffix = p.suffix.lower()
+
             except Exception:
+
                 continue
 
             if (
@@ -728,7 +795,7 @@ class App(object):
 
         self.drop.delete(
             "1.0",
-            "end",
+            "end"
         )
 
         if self.files:
@@ -737,27 +804,27 @@ class App(object):
                 "1.0",
                 "已添加 {} 张图片\n\n".format(
                     len(self.files)
-                ),
+                )
             )
 
             for i, f in enumerate(
                 self.files,
-                1,
+                1
             ):
 
                 self.drop.insert(
                     "end",
                     "{}. {}\n".format(
                         i,
-                        Path(f).name,
-                    ),
+                        Path(f).name
+                    )
                 )
 
         else:
 
             self.drop.insert(
                 "1.0",
-                "请拖入图片或点击“选择图片”。",
+                "请拖入图片或点击“选择图片”。"
             )
 
         self.drop.configure(
@@ -793,13 +860,13 @@ class App(object):
 
         self.drop.delete(
             "1.0",
-            "end",
+            "end"
         )
 
         self.drop.insert(
             "1.0",
             "把 JPG / PNG / WebP / BMP / TIFF 图片拖到这里\n\n"
-            "也可以点击下面的“选择图片”按钮。",
+            "也可以点击下面的“选择图片”按钮。"
         )
 
         self.drop.configure(
@@ -842,7 +909,7 @@ class App(object):
 
             messagebox.showwarning(
                 "提示",
-                "请先添加图片。",
+                "请先添加图片。"
             )
 
             return
@@ -870,13 +937,14 @@ class App(object):
                 or mh < 1
                 or kb < 1
             ):
+
                 raise ValueError
 
         except ValueError:
 
             messagebox.showerror(
                 "参数错误",
-                "最大宽度、最大高度、最大文件大小必须是正整数。",
+                "最大宽度、最大高度、最大文件大小必须是正整数。"
             )
 
             return
@@ -899,12 +967,10 @@ class App(object):
             )
 
         # ----------------------------------------------------
+        # 创建输出目录
+        #
+        # 不使用 exist_ok=True
         # 兼容旧版 Python
-        #
-        # 不使用：
-        # mkdir(parents=True, exist_ok=True)
-        #
-        # 因为 Python 3.4 及更早版本不支持 exist_ok。
         # ----------------------------------------------------
 
         if not out.exists():
@@ -917,20 +983,19 @@ class App(object):
 
             except OSError:
 
-                # 可能是创建过程中目录已经出现
                 if not out.exists():
 
                     messagebox.showerror(
                         "错误",
                         "无法创建输出目录：\n{}".format(
-                            out
-                        ),
+                            str(out)
+                        )
                     )
 
                     return
 
         # ----------------------------------------------------
-        # 开始后台线程
+        # 开始
         # ----------------------------------------------------
 
         self.progress.set(
@@ -947,14 +1012,14 @@ class App(object):
                 mw,
                 mh,
                 kb,
-                out,
+                out
             ),
-            daemon=True,
+            daemon=True
         ).start()
 
 
     # ========================================================
-    # 后台处理
+    # 后台压缩线程
     # ========================================================
 
     def worker(
@@ -962,7 +1027,7 @@ class App(object):
         mw,
         mh,
         kb,
-        out,
+        out
     ):
 
         ok = 0
@@ -974,7 +1039,7 @@ class App(object):
 
         for i, src in enumerate(
             self.files,
-            1,
+            1
         ):
 
             try:
@@ -986,22 +1051,26 @@ class App(object):
 
                 dst = out / name
 
+                # 关键：
+                # 传入 compress_image 时转换成 str
                 size, quality, bytes_written = compress_image(
-                    src,
-                    dst,
+                    str(src),
+                    str(dst),
                     mw,
                     mh,
-                    kb,
+                    kb
                 )
 
                 ok += 1
 
                 self.root.after(
                     0,
-                    lambda i=i,
+                    lambda
+                    i=i,
                     size=size,
                     q=quality,
                     b=bytes_written:
+
                     self.status.set(
                         "{}/{}：{}×{}，质量 {}，{:.1f} KB".format(
                             i,
@@ -1009,9 +1078,9 @@ class App(object):
                             size[0],
                             size[1],
                             q,
-                            b / 1024.0,
+                            b / 1024.0
                         )
-                    ),
+                    )
                 )
 
             except Exception as e:
@@ -1019,20 +1088,21 @@ class App(object):
                 errors.append(
                     "{}: {}".format(
                         Path(src).name,
-                        e,
+                        e
                     )
                 )
 
             self.root.after(
                 0,
                 lambda i=i:
+
                 self.progress.set(
                     i / float(total) * 100
-                ),
+                )
             )
 
         # ----------------------------------------------------
-        # 完成提示
+        # 完成信息
         # ----------------------------------------------------
 
         msg = (
@@ -1040,7 +1110,7 @@ class App(object):
             "输出目录：{}".format(
                 ok,
                 total,
-                out,
+                str(out)
             )
         )
 
@@ -1064,22 +1134,25 @@ class App(object):
         self.root.after(
             0,
             lambda msg=msg:
+
             messagebox.showinfo(
                 "处理完成",
-                msg,
-            ),
+                msg
+            )
         )
 
         self.root.after(
             0,
-            lambda ok=ok,
+            lambda
+            ok=ok,
             total=total:
+
             self.status.set(
                 "完成：{}/{} 张".format(
                     ok,
-                    total,
+                    total
                 )
-            ),
+            )
         )
 
 
@@ -1091,6 +1164,8 @@ if __name__ == "__main__":
 
     root = tk.Tk()
 
-    App(root)
+    App(
+        root
+    )
 
     root.mainloop()
