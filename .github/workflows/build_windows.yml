@@ -108,23 +108,23 @@ jobs:
       # =========================
       # 10. 检查 EXE
       # =========================
-      - name: Verify EXE
+      - name: Verify diagnostic EXE
         shell: powershell
         run: |
-          if (!(Test-Path "dist\ImageSizer_XP32.exe")) {
-            throw "EXE was not generated."
+          if (!(Test-Path "dist\ImageSizer_XP32_Debug.exe")) {
+            throw "Diagnostic EXE was not generated."
           }
 
-          Get-Item "dist\ImageSizer_XP32.exe" |
+          Get-Item "dist\ImageSizer_XP32_Debug.exe" |
             Format-List Name,Length,FullName
 
       # =========================
       # 11. 上传 EXE
       # =========================
-      - name: Upload EXE
+      - name: Upload diagnostic EXE
         uses: actions/upload-artifact@v6
         with:
-          name: ImageSizer-Windows-XP-32bit
-          path: dist/ImageSizer_XP32.exe
+          name: ImageSizer-Windows-XP-32bit-Debug
+          path: dist/ImageSizer_XP32_Debug.exe
           if-no-files-found: error
           retention-days: 30
