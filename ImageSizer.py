@@ -354,9 +354,6 @@ class App:
 
 
 if __name__ == "__main__":
-    if TkinterDnD:
-        root = TkinterDnD.Tk()
-    else:
-        root = tk.Tk()
+    root = tk.Tk()
     App(root)
     root.mainloop()
