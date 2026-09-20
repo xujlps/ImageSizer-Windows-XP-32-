@@ -94,16 +94,16 @@ jobs:
       # =========================
       # 9. 构建 XP 32 位 EXE
       # =========================
-      - name: Build XP 32-bit EXE
-        shell: cmd
-        run: |
-          C:\Python34x86\Scripts\pyinstaller.exe ^
-            --noconfirm ^
-            --clean ^
-            --onefile ^
-            --windowed ^
-            --name ImageSizer_XP32 ^
-            ImageSizer.py
+  - name: Build diagnostic EXE
+  shell: cmd
+  run: |
+    C:\Python34x86\Scripts\pyinstaller.exe ^
+      --noconfirm ^
+      --clean ^
+      --onefile ^
+      --console ^
+      --name ImageSizer_XP32_Debug ^
+      ImageSizer.py
 
       # =========================
       # 10. 检查 EXE
