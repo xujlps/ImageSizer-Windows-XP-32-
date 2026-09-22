@@ -1,18 +1,16 @@
 # ImageSizer — Windows XP 32-bit 绿色版
 
-一个开源的 Windows 图片尺寸/文件大小压缩工具。
+一个开源的 Windows 图片文件大小压缩工具。
 
 ## 功能
 
 - Windows 原生拖拽添加图片
 - 批量处理
-- 最大宽度
-- 最大高度
 - 最大文件大小（KB）
 - 保持宽高比例
 - JPEG 质量二分搜索
 - 文件过大时自动继续缩小尺寸
-- JPG / JPEG / PNG / WebP / BMP / TIFF
+- JPG / JPEG /
 - PNG 透明背景自动转白色
 - EXIF 方向纠正
 - 自动创建输出目录
